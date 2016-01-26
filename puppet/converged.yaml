@@ -1,7 +1,7 @@
 heat_template_version: 2015-10-15
 
 description: >
-  OpenStack hypervisor node configured via Puppet.
+  OpenStack hyper-converged computer and storage node (running Nova and Ceph OSD) configured via Puppet.
 
 parameters:
   AdminPassword:
@@ -29,10 +29,6 @@ parameters:
   CinderEnableRbdBackend:
     default: false
     description: Whether to enable or not the Rbd backend for Cinder
-    type: boolean
-  ComputeEnableCephStorage:
-    default: false
-    description: Whether to deploy Ceph Storage (OSD) on the Compute Nodes
     type: boolean
   Debug:
     default: ''
@@ -315,6 +311,20 @@ parameters:
     type: json
     default: {}
     description: Optional mapping to override hostnames
+  ExtraConfig:
+    default: {}
+    description: |
+      Additional hiera configuration to inject into the cluster. Note
+      that CephStorageExtraConfig takes precedence over ExtraConfig.
+    type: json
+  CephStorageExtraConfig:
+    default: {}
+    description: |
+      Role specific additional hiera configuration to inject into the cluster.
+    type: json
+  CephStorageIPs:
+    default: {}
+    type: json
   NetworkDeploymentActions:
     type: comma_delimited_list
     description: >
@@ -478,6 +488,7 @@ resources:
             - '"%{::uuid}"'
             - heat_config_%{::deploy_config_name}
             - compute_extraconfig
+            - ceph_extraconfig
             - extraconfig
             - compute
             - ceph_cluster # provided by CephClusterConfig
@@ -490,6 +501,7 @@ resources:
             - nova_nuage_data  # Optionally provided by ComputeExtraConfigPre
             - midonet_data # Optionally provided by AllNodesExtraConfig
             - neutron_opencontrail_data  # Optionally provided by ComputeExtraConfigPre
+          merge_behavior: deeper
           datafiles:
             compute_extraconfig:
               mapped_data: {get_param: NovaComputeExtraConfig}
@@ -502,7 +514,6 @@ resources:
             compute:
               raw_data: {get_file: hieradata/compute.yaml}
               mapped_data:
-                enable_ceph_storage: {get_input: enable_ceph_storage}
                 cinder_enable_nfs_backend: {get_input: cinder_enable_nfs_backend}
                 nova::use_ipv6: {get_input: nova_ipv6}
                 nova::debug: {get_input: debug}
@@ -585,7 +596,6 @@ resources:
       config: {get_resource: NovaComputeConfig}
       server: {get_resource: NovaCompute}
       input_values:
-        enable_ceph_storage: {get_param: ComputeEnableCephStorage}
         cinder_enable_nfs_backend: {get_param: CinderEnableNfsBackend}
         debug: {get_param: Debug}
         nova_compute_driver: {get_param: NovaComputeDriver}
@@ -698,6 +708,8 @@ resources:
         timezone: {get_param: TimeZone}
         enable_package_install: {get_param: EnablePackageInstall}
         enable_package_upgrade: {get_attr: [UpdateDeployment, update_managed_packages]}
+        ceph_cluster_network: {get_attr: [NetIpSubnetMap, net_ip_subnet_map, {get_param: [ServiceNetMap, CephClusterNetwork]}]}
+        ceph_public_network: {get_attr: [NetIpSubnetMap, net_ip_subnet_map, {get_param: [ServiceNetMap, CephPublicNetwork]}]}
 
   # Resource for site-specific injection of root certificate
   NodeTLSCAData:
@@ -712,6 +724,13 @@ resources:
     type: OS::TripleO::ComputeExtraConfigPre
     properties:
         server: {get_resource: NovaCompute}
+
+  # Hook for site-specific additional pre-deployment config, e.g extra hieradata
+  CephStorageExtraConfigPre:
+    depends_on: NovaComputeDeployment
+    type: OS::TripleO::CephStorageExtraConfigPre
+    properties:
+        server: {get_resource: CephStorage}
 
   # Hook for site-specific additional pre-deployment config,
   # applying to all nodes, e.g node registration/unregistration
@@ -738,6 +757,10 @@ outputs:
   ip_address:
     description: IP address of the server in the ctlplane network
     value: {get_attr: [NovaCompute, networks, ctlplane, 0]}
+  nova_server_resource:
+    description: Heat resource handle for the ceph storage server
+    value:
+      {get_resource: CephStorage}
   external_ip_address:
     description: IP address of the server in the external network
     value: {get_attr: [ExternalPort, ip_address]}
